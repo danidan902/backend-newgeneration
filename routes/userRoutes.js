@@ -1,3 +1,4 @@
+// backend/routes/userRoutes.js
 const express = require('express');
 const User = require('../models/User');
 const router = express.Router();
@@ -9,7 +10,6 @@ const cloudinary = require('../config/cloudinary.js');
 
 // ==================== CLOUDINARY HELPERS ====================
 
-// Delete a just-uploaded file (on validation failure)
 const destroyUploadedFile = async (file) => {
   if (!file || !file.filename) return;
   try {
@@ -19,9 +19,6 @@ const destroyUploadedFile = async (file) => {
   }
 };
 
-// Extract public_id from a Cloudinary URL
-// https://res.cloudinary.com/duz0kwsrd/image/upload/v1792.../profile-images/123-456.jpg
-//   -> profile-images/123-456
 const extractPublicId = (url) => {
   if (!url || typeof url !== 'string') return null;
   if (!url.includes('res.cloudinary.com')) return null;
@@ -29,7 +26,6 @@ const extractPublicId = (url) => {
   return match ? match[1] : null;
 };
 
-// Delete any old Cloudinary image safely (ignores local paths)
 const destroyOldImage = async (url) => {
   const publicId = extractPublicId(url);
   if (!publicId) return;
@@ -62,14 +58,9 @@ router.post('/login', async (req, res) => {
     let user = null;
     let loginMethod = '';
 
-    // CASE 1: Student ID login
     if (studentId) {
       const cleanStudentId = studentId.trim().toUpperCase();
-
-      user = await User.findOne({
-        studentId: cleanStudentId,
-        role: 'student',
-      });
+      user = await User.findOne({ studentId: cleanStudentId, role: 'student' });
 
       if (user) {
         loginMethod = 'studentId';
@@ -79,20 +70,17 @@ router.post('/login', async (req, res) => {
           studentId: cleanStudentId,
           role: { $ne: 'student' },
         });
-
         if (nonStudentUser) {
           return res.status(401).json({
             error: 'Invalid credentials. Please use your email to login.',
           });
         }
-
         return res.status(401).json({
           error: 'Invalid Student ID. Please check your Student ID and try again.',
         });
       }
     }
 
-    // CASE 2: Email login
     if (!user && email) {
       user = await User.findOne({ email: email.toLowerCase().trim() });
 
@@ -110,7 +98,6 @@ router.post('/login', async (req, res) => {
           email: email.toLowerCase().trim(),
           role: 'student',
         });
-
         if (studentUser) {
           return res.status(401).json({
             error: `This email belongs to a student. Please use your Student ID to login.`,
@@ -121,7 +108,8 @@ router.post('/login', async (req, res) => {
 
     if (!user) {
       return res.status(401).json({
-        error: 'Invalid credentials. Please check your Student ID/Email and try again.',
+        error:
+          'Invalid credentials. Please check your Student ID/Email and try again.',
       });
     }
 
@@ -132,7 +120,6 @@ router.post('/login', async (req, res) => {
     }
 
     const isValidPassword = await bcrypt.compare(password, user.password);
-
     if (!isValidPassword) {
       return res.status(401).json({ error: 'Invalid password. Please try again.' });
     }
@@ -770,7 +757,7 @@ router.post(
   }
 );
 
-// ==================== CREATE USER ====================
+// ==================== CREATE USER (FIXED) ====================
 router.post(
   '/',
   authMiddleware,
@@ -778,6 +765,25 @@ router.post(
   upload.single('profileImage'),
   async (req, res) => {
     try {
+      // ==================== DEBUG LOGS ====================
+      console.log('═══════════════════════════════════');
+      console.log('🖼️  CREATE USER — file received?', !!req.file);
+      if (req.file) {
+        console.log('   file.originalname:', req.file.originalname);
+        console.log('   file.mimetype:', req.file.mimetype);
+        console.log('   file.size:', req.file.size);
+        console.log('   file.path (Cloudinary URL):', req.file.path);
+      } else {
+        console.warn('   ⚠️  NO FILE — profileImage will be null');
+        console.warn('   Check frontend field name: must be "profileImage"');
+      }
+      console.log('📦 parentPhone raw:', req.body.parentPhone);
+      console.log(
+        '   parentPhone type:',
+        Array.isArray(req.body.parentPhone) ? 'ARRAY (duplicate!)' : typeof req.body.parentPhone
+      );
+      console.log('═══════════════════════════════════');
+
       const {
         name,
         email,
@@ -793,7 +799,7 @@ router.post(
         age,
       } = req.body;
 
-      // Validate required fields
+      // ==================== VALIDATION ====================
       if (!name || !password) {
         await destroyUploadedFile(req.file);
         return res.status(400).json({
@@ -801,7 +807,6 @@ router.post(
         });
       }
 
-      // For students, Student ID is REQUIRED
       if ((role === 'student' || !role) && !studentId) {
         await destroyUploadedFile(req.file);
         return res.status(400).json({
@@ -810,7 +815,7 @@ router.post(
         });
       }
 
-      // Generate email for students if not provided
+      // ==================== EMAIL GENERATION ====================
       let finalEmail = email;
       if (!email && (role === 'student' || !role)) {
         const cleanStudentId = studentId.trim().toUpperCase();
@@ -825,14 +830,13 @@ router.post(
         });
       }
 
-      // Check email uniqueness
+      // ==================== UNIQUENESS CHECKS ====================
       const existingUser = await User.findOne({ email: finalEmail });
       if (existingUser) {
         await destroyUploadedFile(req.file);
         return res.status(409).json({ error: 'Email already exists' });
       }
 
-      // Check Student ID uniqueness
       if (studentId) {
         const cleanStudentId = studentId.trim().toUpperCase();
         const existingStudentId = await User.findOne({
@@ -846,19 +850,27 @@ router.post(
         }
       }
 
+      // ==================== PASSWORD HASH ====================
       const salt = await bcrypt.genSalt(10);
       const hashedPassword = await bcrypt.hash(password, salt);
 
-      const sanitizedParentPhone = parentPhone ? parentPhone.toString().trim() : '';
-      const sanitizedName = name ? name.trim() : '';
-      const sanitizedStudentId = studentId ? studentId.trim().toUpperCase() : '';
-      const sanitizedRollNumber = rollNumber ? rollNumber.toString().trim() : '';
-      const sanitizedSex = sex ? sex.toString().trim() : '';
-      const sanitizedAge = age ? age.toString().trim() : '';
-      const sanitizedGrade = grade ? grade.toString().trim() : '';
-      const sanitizedPrograms = programs ? programs.toString().trim() : '';
-      const sanitizedSection = section ? section.toString().trim() : '';
+      // ==================== SANITIZATION (FIXES parentPhone duplicate) ====================
+      // FormData with duplicate fields arrives as arrays. .toString() would
+      // produce "0938893822,0938893822". We take only the FIRST value.
+      const first = (v) => (Array.isArray(v) ? v[0] : v);
+      const sanitize = (v) => (first(v) ? first(v).toString().trim() : '');
 
+      const sanitizedParentPhone = sanitize(parentPhone);
+      const sanitizedName = sanitize(name);
+      const sanitizedStudentId = sanitize(studentId).toUpperCase();
+      const sanitizedRollNumber = sanitize(rollNumber);
+      const sanitizedSex = sanitize(sex);
+      const sanitizedAge = sanitize(age);
+      const sanitizedGrade = sanitize(grade);
+      const sanitizedPrograms = sanitize(programs);
+      const sanitizedSection = sanitize(section);
+
+      // ==================== BUILD USER DATA ====================
       const userData = {
         name: sanitizedName,
         email: finalEmail,
@@ -881,13 +893,19 @@ router.post(
         userData.parentPhone = sanitizedParentPhone;
       }
 
-      // ✅ Cloudinary URL (https://res.cloudinary.com/...)
+      // ==================== SAVE PROFILE IMAGE (FIXES null image) ====================
       if (req.file) {
+        console.log('✅ Saving profileImage:', req.file.path);
         userData.profileImage = req.file.path;
+      } else {
+        console.warn('⚠️  No file to save — profileImage will be null');
       }
 
+      // ==================== SAVE USER ====================
       const user = new User(userData);
       await user.save();
+
+      console.log('✅ User created:', user.name, '| profileImage:', user.profileImage);
 
       const userResponse = user.toObject();
       delete userResponse.password;
@@ -925,7 +943,7 @@ router.post(
   }
 );
 
-// ==================== PROFILE IMAGE ROUTES ====================
+// ==================== PROFILE IMAGE UPLOAD ====================
 router.post(
   '/:userId/profile-image',
   authMiddleware,
@@ -938,11 +956,9 @@ router.post(
         return res.status(400).json({ error: 'No file uploaded' });
       }
 
-      // ✅ Cloudinary URL
       const imageUrl = req.file.path;
 
       const user = await User.findById(userId);
-
       if (!user) {
         await destroyUploadedFile(req.file);
         return res.status(404).json({ error: 'User not found' });
@@ -957,7 +973,6 @@ router.post(
         return res.status(403).json({ error: 'Access denied' });
       }
 
-      // ✅ Delete old Cloudinary image
       if (user.profileImage) {
         await destroyOldImage(user.profileImage);
       }
@@ -982,13 +997,12 @@ router.post(
   }
 );
 
-// Delete profile image
+// ==================== DELETE PROFILE IMAGE ====================
 router.delete('/:userId/profile-image', authMiddleware, async (req, res) => {
   try {
     const { userId } = req.params;
 
     const user = await User.findById(userId);
-
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
@@ -1001,7 +1015,6 @@ router.delete('/:userId/profile-image', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: 'Access denied' });
     }
 
-    // ✅ Delete from Cloudinary
     if (user.profileImage) {
       await destroyOldImage(user.profileImage);
     }
@@ -1080,7 +1093,7 @@ router.get(
   }
 );
 
-// ==================== UPDATE USER ====================
+// ==================== UPDATE USER (FIXED) ====================
 router.put(
   '/:id',
   authMiddleware,
@@ -1088,6 +1101,11 @@ router.put(
   upload.single('profileImage'),
   async (req, res) => {
     try {
+      console.log('═══════════════════════════════════');
+      console.log('✏️  UPDATE USER — file received?', !!req.file);
+      if (req.file) console.log('   file.path:', req.file.path);
+      console.log('═══════════════════════════════════');
+
       const {
         name,
         email,
@@ -1107,9 +1125,16 @@ router.put(
         return res.status(404).json({ error: 'User not found' });
       }
 
-      if (email && email !== user.email) {
+      // Handle array values
+      const first = (v) => (Array.isArray(v) ? v[0] : v);
+      const sanitize = (v) => (first(v) ? first(v).toString().trim() : '');
+
+      const cleanEmail = sanitize(email);
+      const cleanStudentId = sanitize(studentId);
+
+      if (cleanEmail && cleanEmail !== user.email) {
         const existingEmail = await User.findOne({
-          email: email.toLowerCase().trim(),
+          email: cleanEmail.toLowerCase(),
         });
         if (existingEmail) {
           await destroyUploadedFile(req.file);
@@ -1117,23 +1142,21 @@ router.put(
         }
       }
 
-      // Check Student ID uniqueness if provided and different
-      if (studentId && studentId !== user.studentId) {
-        const cleanStudentId = studentId.trim().toUpperCase();
-        const existingStudentId = await User.findOne({
-          studentId: cleanStudentId,
-        });
+      if (cleanStudentId && cleanStudentId !== user.studentId) {
+        const cleanId = cleanStudentId.toUpperCase();
+        const existingStudentId = await User.findOne({ studentId: cleanId });
         if (existingStudentId) {
           await destroyUploadedFile(req.file);
           return res.status(409).json({
-            error: `Student ID '${cleanStudentId}' already exists`,
+            error: `Student ID '${cleanId}' already exists`,
           });
         }
       }
 
       const updateData = {};
-      if (name) updateData.name = name.trim();
-      if (email) updateData.email = email.toLowerCase().trim();
+      const cleanName = sanitize(name);
+      if (cleanName) updateData.name = cleanName;
+      if (cleanEmail) updateData.email = cleanEmail.toLowerCase();
 
       if (password) {
         const salt = await bcrypt.genSalt(10);
@@ -1141,20 +1164,23 @@ router.put(
         updateData.needsPasswordChange = true;
       }
 
-      // Update student-specific fields
-      if (studentId && user.role === 'student') {
-        updateData.studentId = studentId.trim().toUpperCase();
+      if (cleanStudentId && user.role === 'student') {
+        updateData.studentId = cleanStudentId.toUpperCase();
       }
-      if (sex !== undefined) updateData.sex = sex;
-      if (grade !== undefined) {
-        if (grade === 'Graduated' || grade === 'graduated') {
+
+      const cleanSex = sanitize(sex);
+      if (cleanSex !== '') updateData.sex = cleanSex;
+
+      const cleanGrade = sanitize(grade);
+      if (cleanGrade !== '') {
+        if (cleanGrade === 'Graduated' || cleanGrade === 'graduated') {
           updateData.academicStatus = 'Graduated';
           updateData.graduationYear = new Date().getFullYear();
           updateData.graduatedAt = new Date();
           updateData.isActive = false;
           updateData.grade = 'Graduated';
         } else {
-          updateData.grade = grade;
+          updateData.grade = cleanGrade;
           if (user.academicStatus === 'Graduated') {
             updateData.academicStatus = 'Active';
             updateData.isActive = true;
@@ -1163,17 +1189,26 @@ router.put(
           }
         }
       }
-      if (programs !== undefined) updateData.programs = programs;
-      if (section !== undefined) updateData.section = section;
-      if (age !== undefined) updateData.age = age;
-      if (rollNumber !== undefined) updateData.rollNumber = rollNumber.trim();
 
-      // ✅ Handle new profile image (Cloudinary)
+      const cleanPrograms = sanitize(programs);
+      if (cleanPrograms !== '') updateData.programs = cleanPrograms;
+
+      const cleanSection = sanitize(section);
+      if (cleanSection !== '') updateData.section = cleanSection;
+
+      const cleanAge = sanitize(age);
+      if (cleanAge !== '') updateData.age = cleanAge;
+
+      const cleanRollNumber = sanitize(rollNumber);
+      if (cleanRollNumber !== '') updateData.rollNumber = cleanRollNumber;
+
+      // Handle new profile image
       if (req.file) {
         if (user.profileImage) {
           await destroyOldImage(user.profileImage);
         }
         updateData.profileImage = req.file.path;
+        console.log('✅ Updating profileImage:', req.file.path);
       }
 
       updateData.updatedAt = Date.now();
@@ -1207,7 +1242,6 @@ router.delete(
   async (req, res) => {
     try {
       const user = await User.findById(req.params.id);
-
       if (!user) {
         return res.status(404).json({ error: 'User not found' });
       }
@@ -1218,7 +1252,6 @@ router.delete(
           .json({ error: 'Only superadmin can delete superadmin accounts' });
       }
 
-      // ✅ Delete Cloudinary image
       if (user.profileImage) {
         await destroyOldImage(user.profileImage);
       }
@@ -1232,7 +1265,7 @@ router.delete(
   }
 );
 
-// ==================== ADMIN/SUPERADMIN ROUTES ====================
+// ==================== PROMOTE / DEMOTE ADMIN ====================
 router.put(
   '/:id/promote',
   authMiddleware,
